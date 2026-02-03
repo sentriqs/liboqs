@@ -275,10 +275,51 @@ OQS_API int keypair_derand(OUT unsigned char *     pk,
                            OUT unsigned char *     sk,
                            IN const unsigned char *seed)
 {
-  (void)pk;
-  (void)sk;
-  (void)seed;
-  return OQS_ERROR;
+  DEFER_CLEANUP(aligned_sk_t l_sk = {0}, sk_cleanup);
+  DEFER_CLEANUP(pad_r_t h0 = {0}, pad_r_cleanup);
+  DEFER_CLEANUP(pad_r_t h1 = {0}, pad_r_cleanup);
+  DEFER_CLEANUP(pad_r_t h0inv = {0}, pad_r_cleanup);
+  DEFER_CLEANUP(pad_r_t h = {0}, pad_r_cleanup);
+
+  // Parse input seed into seed_t (assuming 32-byte input seed)
+  // If seed is 64 bytes, we could use first 32 bytes, or expand 32 bytes to 64
+  seed_t input_seed;
+  bike_memcpy(input_seed.raw, seed, SEED_BYTES); // Use first 32 bytes
+
+  // Use PRF to expand input seed into the two seeds needed
+  DEFER_CLEANUP(seeds_t seeds = {0}, seeds_cleanup);
+  DEFER_CLEANUP(prf_state_t prf_state = {0}, clean_prf_state);
+  
+  GUARD(init_prf_state(&prf_state, MAX_PRF_INVOCATION, &input_seed));
+  
+  // Extract first seed (for secret key generation)
+  GUARD(get_prf_output(seeds.seed[0].raw, &prf_state, SEED_BYTES));
+  
+  // Extract second seed (for sigma)
+  GUARD(get_prf_output(seeds.seed[1].raw, &prf_state, SEED_BYTES));
+
+  // Now use the same logic as keypair() - generate_secret_key is deterministic!
+  GUARD(generate_secret_key(&h0, &h1,
+                            l_sk.wlist[0].val, l_sk.wlist[1].val,
+                            &seeds.seed[0]));
+
+  // Generate sigma from second seed
+  convert_seed_to_m_type(&l_sk.sigma, &seeds.seed[1]);
+
+  // Calculate the public key
+  gf2x_mod_inv(&h0inv, &h0);
+  gf2x_mod_mul(&h, &h1, &h0inv);
+
+  // Fill the secret key data structure
+  l_sk.bin[0] = h0.val;
+  l_sk.bin[1] = h1.val;
+  l_sk.pk     = h.val;
+
+  // Copy the data to the output buffers
+  bike_memcpy(sk, &l_sk, sizeof(l_sk));
+  bike_memcpy(pk, &l_sk.pk, sizeof(l_sk.pk));
+
+  return SUCCESS;
 }
 
 OQS_API int encaps_derand(OUT unsigned char *     ct,
@@ -286,9 +327,44 @@ OQS_API int encaps_derand(OUT unsigned char *     ct,
                           IN const unsigned char *pk,
                           IN const unsigned char *seed)
 {
-  (void)ct;
-  (void)ss;
-  (void)pk;
-  (void)seed;
-  return OQS_ERROR;
+  // Public values (they do not require cleanup on exit).
+  pk_t l_pk;
+  ct_t l_ct;
+
+  DEFER_CLEANUP(m_t m, m_cleanup);
+  DEFER_CLEANUP(ss_t l_ss, ss_cleanup);
+  DEFER_CLEANUP(seeds_t seeds = {0}, seeds_cleanup);
+  DEFER_CLEANUP(pad_e_t e, pad_e_cleanup);
+
+  // Copy the data from the input buffer. This is required in order to avoid
+  // alignment issues on non x86_64 processors.
+  bike_memcpy(&l_pk, pk, sizeof(l_pk));
+
+  // Parse input seed into seed_t (32-byte input seed)
+  seed_t input_seed;
+  bike_memcpy(input_seed.raw, seed, SEED_BYTES);
+
+  // Use PRF to expand input seed into the seed needed for encapsulation
+  DEFER_CLEANUP(prf_state_t prf_state = {0}, clean_prf_state);
+  
+  GUARD(init_prf_state(&prf_state, MAX_PRF_INVOCATION, &input_seed));
+  
+  // Extract seed for m (message/randomness)
+  GUARD(get_prf_output(seeds.seed[0].raw, &prf_state, SEED_BYTES));
+
+  // e = H(m) = H(seed[0])
+  convert_seed_to_m_type(&m, &seeds.seed[0]);
+  GUARD(function_h(&e, &m, &l_pk));
+
+  // Calculate the ciphertext
+  GUARD(encrypt(&l_ct, &e, &l_pk, &m));
+
+  // Generate the shared secret
+  GUARD(function_k(&l_ss, &m, &l_ct));
+
+  // Copy the data to the output buffers
+  bike_memcpy(ct, &l_ct, sizeof(l_ct));
+  bike_memcpy(ss, &l_ss, sizeof(l_ss));
+
+  return SUCCESS;
 }
