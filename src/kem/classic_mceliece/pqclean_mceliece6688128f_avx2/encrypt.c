@@ -44,9 +44,11 @@ static void gen_e_derand(unsigned char *e, const unsigned char *input_seed) {
         unsigned char bytes[ SYS_T * 2 * sizeof(uint16_t) ];
     } buf;
 
-    uint16_t ind[ SYS_T ];
-    unsigned char mask;
-    unsigned char val[ SYS_T ];
+    int32_t ind[ SYS_T ]; // can also use uint16 or int16
+    uint64_t e_int[ (SYS_N + 63) / 64 ];
+    uint64_t one = 1;
+    uint64_t mask;
+    uint64_t val[ SYS_T ];
 
     // Initialize seed from input
     shake(seed + 1, 32, input_seed, SEED_BYTES);
@@ -80,13 +82,12 @@ static void gen_e_derand(unsigned char *e, const unsigned char *input_seed) {
 
         // check for repetition
 
-        eq = 0;
+        int32_sort(ind, SYS_T);
 
+        eq = 0;
         for (i = 1; i < SYS_T; i++) {
-            for (j = 0; j < i; j++) {
-                if (uint32_is_equal_declassify(ind[i], ind[j])) {
-                    eq = 1;
-                }
+            if (uint32_is_equal_declassify(ind[i - 1], ind[i])) {
+                eq = 1;
             }
         }
 
@@ -96,17 +97,29 @@ static void gen_e_derand(unsigned char *e, const unsigned char *input_seed) {
     }
 
     for (j = 0; j < SYS_T; j++) {
-        val[j] = 1 << (ind[j] & 7);
+        val[j] = one << (ind[j] & 63);
     }
 
-    for (i = 0; i < SYS_N / 8; i++) {
-        e[i] = 0;
+    for (i = 0; i < (SYS_N + 63) / 64; i++) {
+        e_int[i] = 0;
 
         for (j = 0; j < SYS_T; j++) {
-            mask = same_mask((uint16_t)i, ind[j] >> 3);
+            mask = i ^ (ind[j] >> 6);
+            mask -= 1;
+            mask >>= 63;
+            mask = -mask;
 
-            e[i] |= val[j] & mask;
+            e_int[i] |= val[j] & mask;
         }
+    }
+
+    for (i = 0; i < (SYS_N + 63) / 64 - 1; i++) {
+        store8(e, e_int[i]);
+        e += 8;
+    }
+
+    for (j = 0; j < (SYS_N % 64); j += 8) {
+        e[ j / 8 ] = (e_int[i] >> j) & 0xFF;
     }
 }
 
