@@ -2,6 +2,8 @@
   This file is for Niederreiter encryption
 */
 
+#include <string.h>
+
 #include "util.h"
 #include "params.h"
 #include "randombytes.h"

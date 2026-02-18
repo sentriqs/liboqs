@@ -4,6 +4,8 @@
   This file is for Niederreiter encryption
 */
 
+#include <string.h>
+
 #include "util.h"
 #include "int32_sort.h"
 #include "params.h"
@@ -202,5 +204,5 @@ void encrypt(unsigned char *s, const unsigned char *pk, unsigned char *e) {
 void encrypt_derand(unsigned char *s, const unsigned char *pk, unsigned char *e, const unsigned char* input_seed) {
     gen_e_derand(e, input_seed);
 
-    syndrome(s, pk, e);
+    syndrome_asm(s, pk, e);
 }
